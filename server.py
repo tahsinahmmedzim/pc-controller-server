@@ -231,12 +231,40 @@ status_label = None
 refresh_device_list_callback = None
 
 def show_connection_notification(device_name):
+    # 1. Native Windows Balloon Notification via background PowerShell (100% thread-safe & reliable)
+    try:
+        ps_code = f"""
+[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');
+[void][System.Reflection.Assembly]::LoadWithPartialName('System.Drawing');
+$bal = New-Object System.Windows.Forms.NotifyIcon;
+$bal.Icon = [System.Drawing.SystemIcons]::Information;
+$bal.BalloonTipTitle = 'TSS PC Controller';
+$bal.BalloonTipText = 'Mobile App Connected: {device_name}';
+$bal.Visible = $true;
+$bal.ShowBalloonTip(5000);
+Start-Sleep -Seconds 1;
+$bal.Dispose();
+"""
+        import subprocess
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command", ps_code.replace("\n", " ")],
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0x08000000
+        )
+        print(f"[TSS] Native Windows connection toast triggered for: {device_name}")
+    except Exception as e:
+        print(f"[TSS] PowerShell toast error: {e}")
+
+    # 2. Fallback to pystray notify
     global tray_icon
     if tray_icon:
         try:
             tray_icon.notify(f"Mobile App Connected: {device_name}", "TPC Controller")
         except Exception as e:
-            print(f"[TSS] Notification Error: {e}")
+            print(f"[TSS] pystray notify fallback error: {e}")
 
 def update_gui_status():
     global status_label, _gui_root, active_connections, refresh_device_list_callback
