@@ -37,7 +37,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Flags: nowait skipifsilent
-Filename: "schtasks"; Parameters: "/create /tn ""TSS_PC_Controller"" /tr ""'{app}\{#MyAppExeName}'"" /sc onlogon /rl highest /f"; Flags: runhidden
+Filename: "schtasks"; Parameters: "/create /tn ""TSS_PC_Controller"" /tr ""'{app}\{#MyAppExeName}' --startup"" /sc onlogon /rl highest /f"; Flags: runhidden
 
 [UninstallRun]
 Filename: "schtasks"; Parameters: "/delete /tn ""TSS_PC_Controller"" /f"; Flags: runhidden

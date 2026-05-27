@@ -410,23 +410,31 @@ def self_install():
     """Establishes startup persistence in the Windows Registry and Scheduled Tasks to boot when the PC turns on"""
     if not getattr(sys, 'frozen', False): return
     try:
-        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-        install_dir = os.path.join(appdata, "TSS_PC_Controller")
-        os.makedirs(install_dir, exist_ok=True)
-        target_exe = os.path.join(install_dir, f"{APP_NAME}.exe")
+        current_exe = sys.executable
+        is_in_appdata = "appdata" in os.path.normcase(current_exe)
         
-        if os.path.normcase(sys.executable) != os.path.normcase(target_exe):
-            shutil.copy2(sys.executable, target_exe)
+        if is_in_appdata:
+            target_exe = current_exe
+        else:
+            appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+            install_dir = os.path.join(appdata, "TSS_PC_Controller")
+            os.makedirs(install_dir, exist_ok=True)
+            target_exe = os.path.join(install_dir, f"{APP_NAME}.exe")
+            if os.path.normcase(current_exe) != os.path.normcase(target_exe):
+                shutil.copy2(current_exe, target_exe)
         
-        # Register in Windows Registry Run key for standard startup
+        # Remove from Windows Registry Run key to avoid duplicate startup trigger with Scheduled Tasks
         try:
             import winreg
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_WRITE) as reg_key:
-                winreg.SetValueEx(reg_key, APP_NAME, 0, winreg.REG_SZ, f'"{target_exe}" --startup')
-            print("[TSS] Registered in Windows Registry Run key for startup auto-start")
+                try:
+                    winreg.DeleteValue(reg_key, APP_NAME)
+                    print("[TSS] Cleaned up legacy Windows Registry Run entry to prevent double-start")
+                except FileNotFoundError:
+                    pass
         except Exception as e:
-            print(f"[TSS] Registry installation error: {e}")
+            print(f"[TSS] Registry cleanup error: {e}")
             
         # Register backup Scheduled Task for UAC bypass
         try:
