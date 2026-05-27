@@ -230,18 +230,59 @@ active_connections = {} # Maps websocket -> device_name
 status_label = None
 refresh_device_list_callback = None
 
-def show_connection_notification(device_name):
-    # 1. Native Windows Balloon Notification via background PowerShell (100% thread-safe & reliable)
+def show_connection_notification(device_name, device_id=None):
+    # Determine display message
+    msg = f"Mobile App Connected: {device_name}"
+    if device_id:
+        msg = f"Mobile App Connected [{device_id}]"
+
+    # Try native Windows Toast notifier using win10toast first
+    try:
+        from win10toast import ToastNotifier
+        toaster = ToastNotifier()
+        # Run in a daemon thread so it dismisses itself silently without blocking the server main loop
+        threading.Thread(
+            target=lambda: toaster.show_toast(
+                "TPC Controller",
+                msg,
+                duration=4,
+                threaded=True
+            ),
+            daemon=True
+        ).start()
+        print(f"[TSS] win10toast triggered successfully: {msg}")
+        return
+    except Exception as winErr:
+        print(f"[TSS] win10toast not available: {winErr}")
+
+    # Try native Windows notification using plyer as secondary
+    try:
+        from plyer import notification
+        threading.Thread(
+            target=lambda: notification.notify(
+                title="TPC Controller",
+                message=msg,
+                app_name="TPC Controller",
+                timeout=4
+            ),
+            daemon=True
+        ).start()
+        print(f"[TSS] plyer notification triggered successfully: {msg}")
+        return
+    except Exception as plyerErr:
+        print(f"[TSS] plyer not available: {plyerErr}")
+
+    # 3. Native Windows Balloon Notification via background PowerShell (100% thread-safe & reliable fallback)
     try:
         ps_code = f"""
 [void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');
 [void][System.Reflection.Assembly]::LoadWithPartialName('System.Drawing');
 $bal = New-Object System.Windows.Forms.NotifyIcon;
 $bal.Icon = [System.Drawing.SystemIcons]::Information;
-$bal.BalloonTipTitle = 'TSS PC Controller';
-$bal.BalloonTipText = 'Mobile App Connected: {device_name}';
+$bal.BalloonTipTitle = 'TPC Controller';
+$bal.BalloonTipText = '{msg}';
 $bal.Visible = $true;
-$bal.ShowBalloonTip(5000);
+$bal.ShowBalloonTip(4000);
 Start-Sleep -Seconds 1;
 $bal.Dispose();
 """
@@ -254,15 +295,15 @@ $bal.Dispose();
             startupinfo=startupinfo,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0x08000000
         )
-        print(f"[TSS] Native Windows connection toast triggered for: {device_name}")
+        print(f"[TSS] PowerShell toast fallback triggered: {msg}")
     except Exception as e:
-        print(f"[TSS] PowerShell toast error: {e}")
+        print(f"[TSS] PowerShell toast fallback error: {e}")
 
-    # 2. Fallback to pystray notify
+    # 4. Fallback to pystray notify if icon exists
     global tray_icon
     if tray_icon:
         try:
-            tray_icon.notify(f"Mobile App Connected: {device_name}", "TPC Controller")
+            tray_icon.notify(msg, "TPC Controller")
         except Exception as e:
             print(f"[TSS] pystray notify fallback error: {e}")
 
@@ -294,6 +335,19 @@ def get_local_ip():
         s.close()
         return ip
     except: return socket.gethostbyname(socket.gethostname())
+
+def wait_for_network(timeout=30, check_interval=2):
+    """Wait for network connection to get a valid non-loopback IP address."""
+    print("[TSS] Waiting for network initialization...")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        ip = get_local_ip()
+        if ip and ip != "127.0.0.1" and not ip.startswith("169.254"):
+            print(f"[TSS] Network initialized! Active IP: {ip}")
+            return ip
+        time.sleep(check_interval)
+    print("[TSS] Network initialization timeout. Using fallback IP.")
+    return get_local_ip()
 
 def get_config_path(filename):
     appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
@@ -353,7 +407,7 @@ def disable_secure_desktop():
 # ===== PERSISTENCE LOGIC =====
 
 def self_install():
-    """Establishes startup persistence using Scheduled Task to boot silently in the background without UAC prompts when the PC turns on"""
+    """Establishes startup persistence in the Windows Registry and Scheduled Tasks to boot when the PC turns on"""
     if not getattr(sys, 'frozen', False): return
     try:
         appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
@@ -364,26 +418,24 @@ def self_install():
         if os.path.normcase(sys.executable) != os.path.normcase(target_exe):
             shutil.copy2(sys.executable, target_exe)
         
-        # 1. Clean up legacy Registry Run key to prevent UAC prompts on boot
+        # Register in Windows Registry Run key for standard startup
         try:
             import winreg
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_WRITE) as reg_key:
-                winreg.DeleteValue(reg_key, APP_NAME)
-            print("[TSS] Cleaned up legacy Registry Run key")
-        except Exception:
-            pass
+                winreg.SetValueEx(reg_key, APP_NAME, 0, winreg.REG_SZ, f'"{target_exe}" --startup')
+            print("[TSS] Registered in Windows Registry Run key for startup auto-start")
+        except Exception as e:
+            print(f"[TSS] Registry installation error: {e}")
             
-        # 2. Establish startup persistence using Scheduled Task (bypasses UAC on logon)
+        # Register backup Scheduled Task for UAC bypass
         try:
             task_name = APP_NAME
-            # Delete first if exists
             subprocess.run(f'schtasks /delete /tn "{task_name}" /f', shell=True, creationflags=0x08000000, capture_output=True)
-            # Create task running with highest privileges
             subprocess.run(f'schtasks /create /tn "{task_name}" /tr "\\"{target_exe}\\" --startup" /sc onlogon /rl highest /f', shell=True, creationflags=0x08000000, capture_output=True)
-            print("[TSS] Added to Scheduled Tasks for silent auto-start on boot without UAC")
-        except Exception as e:
-            print(f"[TSS] Scheduled Task installation error: {e}")
+            print("[TSS] Registered backup Scheduled Task as alternative auto-start")
+        except Exception:
+            pass
     except Exception as e:
         print(f"[TSS] Persistence Error: {e}")
 
@@ -994,7 +1046,7 @@ async def handle_ws_client(websocket, *args):
                         active_connections[websocket] = {"name": device_name, "id": device_id}
                         update_gui_status()
                         await websocket.send(json.dumps({"type": "pair_response", "status": "accepted", "name": socket.gethostname()}))
-                        show_connection_notification(device_name)
+                        show_connection_notification(device_name, device_id=device_id)
                     else:
                         # First-Time / unrecognized device -> display Yes/No popup on PC
                         print(f"[TSS] Unrecognized Device {device_name} requesting pairing. Displaying confirmation popup...")
@@ -1017,7 +1069,7 @@ async def handle_ws_client(websocket, *args):
                             active_connections[websocket] = {"name": device_name, "id": device_id}
                             update_gui_status()
                             await websocket.send(json.dumps({"type": "pair_response", "status": "accepted", "name": socket.gethostname()}))
-                            show_connection_notification(device_name)
+                            show_connection_notification(device_name, device_id=device_id)
                         else:
                             await websocket.send(json.dumps({"type": "pair_response", "status": "rejected"}))
                     continue
@@ -1055,15 +1107,17 @@ async def handle_ws_client(websocket, *args):
             update_gui_status()
         print("[TSS] State Cleaned Up")
 
-def start_discovery_broadcast(ip):
+def start_discovery_broadcast():
     broadcast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     broadcast_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    message = json.dumps({"type": "tss_discovery", "ip": ip, "port": PORT, "name": socket.gethostname()})
     while True:
         try:
+            current_ip = get_local_ip()
+            message = json.dumps({"type": "tss_discovery", "ip": current_ip, "port": PORT, "name": socket.gethostname()})
             broadcast_sock.sendto(message.encode('utf-8'), ('255.255.255.255', 8001))
             time.sleep(2)
-        except: pass
+        except:
+            time.sleep(2)
 
 # ===== TRAY =====
 def setup_tray(ip):
@@ -1108,7 +1162,14 @@ async def main():
     except:
         pass
     
-    ip = get_local_ip()
+    # Delayed boot handling for network interfaces to connect to routers
+    is_startup = "--startup" in sys.argv
+    if is_startup:
+        print("[TSS] Detected boot startup. Waiting for Windows network interfaces...")
+        time.sleep(5)
+        
+    ip = wait_for_network()
+    
     print("="*40)
     print(f"  TSS PC CONTROLLER SERVER V5.5")
     print(f"  STATUS: ONLINE (WIFI ONLY)")
@@ -1119,8 +1180,8 @@ async def main():
     self_install() # Ensure auto-run on startup
     setup_tray(ip)
     
-    # Start UDP Discovery
-    threading.Thread(target=start_discovery_broadcast, args=(ip,), daemon=True).start()
+    # Start dynamic UDP Discovery
+    threading.Thread(target=start_discovery_broadcast, daemon=True).start()
     
     try:
         async with websockets.serve(handle_ws_client, "0.0.0.0", PORT, ping_interval=5, ping_timeout=10):
