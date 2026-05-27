@@ -224,6 +224,7 @@ client_ready = {}
 gui_open = False
 IPC_PORT = 65432
 tray_icon = None
+stream_resolution = "720p"
 
 # Track currently active connections and GUI controls
 active_connections = {} # Maps websocket -> device_name
@@ -851,9 +852,15 @@ async def process_data(data, sender_type="wifi", websocket=None):
         if enabled:
             if not audio_streaming:
                 audio_streaming = True
-                threading.Thread(target=stream_audio, args=(websocket,), daemon=True).start()
         else:
             audio_streaming = False
+
+    elif msg_type == "set_resolution":
+        resolution = data.get("resolution", "720p")
+        global stream_resolution
+        stream_resolution = resolution
+        print(f"[TSS] Resolution changed dynamically to: {resolution}")
+        return
 
 
 async def stream_screen(websocket, sender_type):
@@ -899,13 +906,16 @@ async def stream_screen(websocket, sender_type):
         except Exception:
             pass
 
-        # 960x540 is extremely fast to compress and transmit, and crisp on phone screens
-        if sender_type == "wifi":
-            pil_img.thumbnail((960, 540), Image.NEAREST)
-            quality = 40
-        else:
-            pil_img.thumbnail((854, 480), Image.NEAREST)
-            quality = 35
+        # Dynamically scale resolution based on user preference (720p vs 1080p HD)
+        global stream_resolution
+        if stream_resolution == "1080p":
+            target_res = (1920, 1080)
+            quality = 50
+        else: # default 720p
+            target_res = (1280, 720)
+            quality = 42
+            
+        pil_img.thumbnail(target_res, Image.NEAREST)
             
         buffer = io.BytesIO()
         pil_img.save(buffer, format="JPEG", quality=quality, optimize=False)
