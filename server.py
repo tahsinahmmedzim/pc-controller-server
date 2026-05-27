@@ -1070,10 +1070,11 @@ async def handle_ws_client(websocket, *args):
                         print(f"[TSS] Unrecognized Device {device_name} requesting pairing. Displaying confirmation popup...")
                         
                         def ask_native():
+                            # MB_YESNO (4) | MB_ICONQUESTION (32) | MB_TOPMOST (262144) | MB_SETFOREGROUND (65536)
                             return ctypes.windll.user32.MessageBoxW(0, 
                                 f"Are you sure to connect this mobile on your PC / Laptop to connect TSS PC Controller App??\n\nDevice: {device_name}", 
                                 "TSS PC Controller - Pairing Request", 
-                                4 | 32 | 262144)
+                                4 | 32 | 262144 | 65536)
                         
                         res = await asyncio.to_thread(ask_native)
                         if res == 6: # IDYES
